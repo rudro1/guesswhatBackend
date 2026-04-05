@@ -104,6 +104,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import connectMongoDB from './config/mongodb.js';
 import prisma from './config/prisma.js';
 import authRoutes from './routes/auth.js';
@@ -115,14 +117,18 @@ import templateRoutes from './routes/templates.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { setSseClients } from './queues/workers/uploadWorker.js';
 
+// Setup __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
 
-// Trust Render's proxy for Rate Limiting
+// 1. Trust Render's proxy for Rate Limiting
 app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 5000;
 
-// Fixed Array with missing commas
+// 2. Optimized CORS Origins
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://guesswhat-frontend.vercel.app',
@@ -130,11 +136,7 @@ const allowedOrigins = [
   'http://127.0.0.1:5173'
 ].filter(Boolean);
 
-// app.use(helmet({ 
-//   crossOriginResourcePolicy: { policy: 'cross-origin' },
-//   contentSecurityPolicy: false // Deployment-e waveform ba audio issue hole eta false rakha safe
-// }));
-
+// 3. Security: Helmet with Custom CSP for Fonts & Resources
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   contentSecurityPolicy: {
@@ -142,17 +144,16 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "res.cloudinary.com"], // Cloudinary images allow korar jonno
-      fontSrc: ["'self'", "https://guesswhatbackend.onrender.com", "data:"], // Font allow kora holo
+      imgSrc: ["'self'", "data:", "res.cloudinary.com"],
+      fontSrc: ["'self'", "https://guesswhatbackend.onrender.com", "data:", "https://fonts.gstatic.com"],
       connectSrc: ["'self'", "https://guesswhatbackend.onrender.com", "https://api.cloudinary.com"],
     },
   },
 }));
 
-// Optimized CORS
+// 4. CORS Middleware
 const corsOptions = {
   origin: (origin, callback) => {
-    // allow requests with no origin (like mobile apps or curl requests)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -167,21 +168,35 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
+// 5. Body Parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// 6. Static Files (Fixes Font 404 & Loading)
+app.use('/resources', express.static(path.join(__dirname, 'resources')));
+
+// 7. Rate Limiter
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000, // Deployment-e upload/fetch bar bar hoy, tai limit barano bhalo
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip // Ensures unique IP tracking
+  keyGenerator: (req) => req.ip
 });
 app.use('/api', limiter);
 
 setSseClients(sseClients);
 
-// Routes
+// 8. Root Route (Fixes Base URL 404)
+app.get('/', (req, res) => {
+  res.json({ 
+    message: "Guess What API is live", 
+    status: "active",
+    docs: "/api/health" 
+  });
+});
+
+// 9. API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
@@ -189,6 +204,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/annotations', annotationRoutes);
 app.use('/api/templates', templateRoutes);
 
+// Health Check
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -199,13 +215,14 @@ app.get('/api/health', (req, res) => {
 
 app.use(errorHandler);
 
+// 10. Server Initialization
 const startServer = async () => {
   try {
     await connectMongoDB();
     await prisma.$connect();
     console.log('[PostgreSQL] Connected via Prisma');
 
-    app.listen(PORT, '0.0.0.0', () => { // Explicitly bind to all interfaces for Render
+    app.listen(PORT, '0.0.0.0', () => {
       console.log(`[Server] Running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
     });
   } catch (error) {
