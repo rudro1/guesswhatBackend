@@ -104,6 +104,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import connectMongoDB from './config/mongodb.js';
@@ -120,6 +121,18 @@ import { setSseClients } from './queues/workers/uploadWorker.js';
 // Setup __dirname for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const TEMP_CHUNKS_DIR = path.join(process.cwd(), 'temp_chunks');
+const TEMP_MERGED_DIR = path.join(process.cwd(), 'temp_merged');
+
+[UPLOAD_DIR, TEMP_CHUNKS_DIR, TEMP_MERGED_DIR].forEach((dir) => {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    console.error('[Server] Failed to create directory', dir, e.message);
+  }
+});
 
 const app = express();
 
@@ -168,9 +181,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// 5. Body Parsers
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// 5. Body Parsers (large payloads for batch metadata / mobile clients)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 6. Static Files (Fixes Font 404 & Loading)
 app.use('/resources', express.static(path.join(__dirname, 'resources')));

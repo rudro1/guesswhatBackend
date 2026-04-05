@@ -2,32 +2,11 @@ import express from 'express';
 import prisma from '../config/prisma.js';
 import Annotation from '../models/Annotation.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import { getTasks } from '../controllers/taskController.js';
 
 const router = express.Router();
 
-// Get all tasks (admin)
-router.get('/', authenticate, authorize('ADMIN'), async (req, res, next) => {
-  try {
-    const { status, batchId, page = 1, limit = 50 } = req.query;
-    const where = {};
-    if (status) where.status = status.toUpperCase();
-    if (batchId) where.uploadBatchId = batchId;
-
-    const [tasks, total] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        skip: (parseInt(page) - 1) * parseInt(limit),
-        take: parseInt(limit),
-        orderBy: { id: 'asc' }
-      }),
-      prisma.task.count({ where })
-    ]);
-
-    res.json({ tasks, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
-  } catch (error) {
-    next(error);
-  }
-});
+router.get('/', authenticate, authorize('ADMIN'), getTasks);
 
 // Get next pending task for annotator
 router.get('/next', authenticate, authorize('ANNOTATOR'), async (req, res, next) => {

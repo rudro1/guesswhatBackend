@@ -43,6 +43,22 @@ const chunkUpload = multer({
   limits: { fileSize: 6 * 1024 * 1024 },
 });
 
+function handleChunkUpload(req, res, next) {
+  chunkUpload.single('chunk')(req, res, (err) => {
+    if (!err) return next();
+    if (err.name === 'MulterError') {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Chunk exceeds maximum allowed size (6MB per chunk)' });
+      }
+      return res.status(400).json({ error: err.message || 'Multipart upload error' });
+    }
+    if (err.status === 400) {
+      return res.status(400).json({ error: err.message || 'Invalid upload request' });
+    }
+    return next(err);
+  });
+}
+
 async function sha256HexFromPath(filePath) {
   const hash = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(filePath)) {
@@ -55,7 +71,7 @@ router.post(
   '/chunk',
   authenticate,
   authorize('ADMIN'),
-  chunkUpload.single('chunk'),
+  handleChunkUpload,
   async (req, res, next) => {
     try {
       const {
@@ -146,7 +162,8 @@ router.post('/merge', authenticate, authorize('ADMIN'), async (req, res, next) =
     const diskExt = path.extname(fileName) || '.bin';
     mergedPath = path.join(MERGE_DIR, `${batchId}_${fileId}${diskExt}`);
     const extNoDot = path.extname(fileName).toLowerCase().replace('.', '');
-    const originalFormat = ACCEPTED_FORMATS.includes(extNoDot) ? extNoDot : mimeType.split('/')[1];
+    const mimePart = typeof mimeType === 'string' ? mimeType.split('/')[1] : '';
+    const originalFormat = ACCEPTED_FORMATS.includes(extNoDot) ? extNoDot : mimePart || 'unknown';
 
     writeStream = fs.createWriteStream(mergedPath);
 
@@ -245,8 +262,20 @@ router.get('/progress/:batchId', authenticate, (req, res) => {
 
 router.post('/batch/init', authenticate, authorize('ADMIN'), async (req, res, next) => {
   try {
+    const uploadBatchId = uuidv4();
     const { files, projectName } = req.body;
-    const batchId = uuidv4();
+
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'files must be a non-empty array with fileId and fileName per item' });
+    }
+
+    for (const f of files) {
+      if (!f || typeof f.fileId !== 'string' || typeof f.fileName !== 'string') {
+        return res.status(400).json({ error: 'Each file entry requires string fileId and fileName' });
+      }
+    }
+
+    const batchId = uploadBatchId;
     const name =
       typeof projectName === 'string' && projectName.trim()
         ? projectName.trim().slice(0, 200)
@@ -270,8 +299,9 @@ router.post('/batch/init', authenticate, authorize('ADMIN'), async (req, res, ne
     }
 
     await pipelineRedis.exec();
-    res.json({ batchId });
+    res.json({ batchId, uploadBatchId: batchId });
   } catch (error) {
+    console.error('DB_ERROR:', error.message);
     next(error);
   }
 });

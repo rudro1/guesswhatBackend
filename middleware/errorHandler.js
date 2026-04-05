@@ -1,6 +1,14 @@
 export const errorHandler = (err, req, res, next) => {
   console.error('[Error]', err.stack || err.message);
 
+  if (err.name === 'MulterError') {
+    const msg =
+      err.code === 'LIMIT_FILE_SIZE'
+        ? 'Uploaded file exceeds the maximum allowed size'
+        : err.message || 'Multipart upload error';
+    return res.status(400).json({ error: msg });
+  }
+
   if (err.name === 'ValidationError') {
     return res.status(400).json({ error: err.message });
   }
@@ -22,7 +30,15 @@ export const errorHandler = (err, req, res, next) => {
     err.statusCode ||
     (err.code === 'LIMIT_FILE_SIZE' ? 400 : null) ||
     500;
-  const message = err.message || 'Internal server error';
+
+  let message;
+  if (status < 500) {
+    message = err.message || 'Request failed';
+  } else if (process.env.NODE_ENV === 'production') {
+    message = 'Internal server error';
+  } else {
+    message = err.message || 'Internal server error';
+  }
 
   res.status(status).json({ error: message });
 };

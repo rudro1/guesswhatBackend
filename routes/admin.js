@@ -157,6 +157,7 @@ import Annotation from '../models/Annotation.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { buildExportData, buildSegmentAuditTrail, sha256Json } from '../utils/annotationExport.js';
 import { segmentsToTrainingArray } from '../utils/clientTrainingExport.js';
+import { getBatches, getMonitoringTasks } from '../controllers/taskController.js';
 
 const router = express.Router();
 
@@ -303,98 +304,9 @@ router.get('/stats', authenticate, authorize('ADMIN'), async (req, res, next) =>
   }
 });
 
-router.get('/batches', authenticate, authorize('ADMIN'), async (req, res, next) => {
-  try {
-    const rows = await prisma.$queryRaw`
-      SELECT
-        t."uploadBatchId" AS "uploadBatchId",
-        COUNT(*)::integer AS "totalTasks",
-        COUNT(*) FILTER (WHERE t.status::text IN ('COMPLETED', 'REVIEWED'))::integer AS "annotatedCount",
-        COUNT(*) FILTER (WHERE t.status::text = 'REVIEWED')::integer AS "reviewedCount",
-        COUNT(*) FILTER (WHERE t.status::text IN ('PENDING', 'IN_PROGRESS'))::integer AS "remainingCount",
-        MAX(t."projectName") AS "projectName"
-      FROM "Task" t
-      GROUP BY t."uploadBatchId"
-      ORDER BY MIN(t.id) ASC
-    `;
-    const batches = rows.map((r) => {
-      const total = Number(r.totalTasks) || 0;
-      const reviewed = Number(r.reviewedCount) || 0;
-      const batchName = r.projectName || r.uploadBatchId || 'Unnamed batch';
-      const clientReadinessPct = total > 0 ? Math.round((reviewed / total) * 1000) / 10 : 0;
-      const fullyReviewed = total > 0 && reviewed === total;
-      return {
-        uploadBatchId: r.uploadBatchId,
-        batchName,
-        totalTasks: total,
-        annotatedCount: Number(r.annotatedCount) || 0,
-        reviewedCount: reviewed,
-        remainingCount: Number(r.remainingCount) || 0,
-        clientReadinessPct,
-        fullyReviewed,
-      };
-    });
-    res.json({ batches });
-  } catch (error) {
-    next(error);
-  }
-});
+router.get('/batches', authenticate, authorize('ADMIN'), getBatches);
 
-router.get('/monitoring-tasks', authenticate, authorize('ADMIN'), async (req, res, next) => {
-  try {
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
-    const batchId =
-      typeof req.query.batchId === 'string' && req.query.batchId.trim() ? req.query.batchId.trim() : null;
-    const where = batchId ? { uploadBatchId: batchId } : {};
-    const [tasks, total] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy: { id: 'asc' },
-      }),
-      prisma.task.count({ where }),
-    ]);
-    const taskIds = tasks.map((t) => t.id);
-    const annotations = await Annotation.find({ taskId: { $in: taskIds } }).lean();
-    const annByTask = new Map(annotations.map((a) => [a.taskId, a]));
-    const userIds = [...new Set(annotations.flatMap((a) => [a.annotatorId, a.reviewerId].filter(Boolean)))];
-    const users = userIds.length
-      ? await prisma.user.findMany({
-          where: { id: { in: userIds } },
-          select: { id: true, name: true, email: true },
-        })
-      : [];
-    const userById = new Map(users.map((u) => [u.id, u]));
-
-    const rows = tasks.map((t) => {
-      const a = annByTask.get(t.id);
-      const annot = a?.annotatorId ? userById.get(a.annotatorId) : null;
-      const rev = a?.reviewerId ? userById.get(a.reviewerId) : null;
-      return {
-        ...t,
-        annotatorName: a?.annotatorName || annot?.name || null,
-        annotatorEmail: a?.annotatorEmail || annot?.email || null,
-        reviewerName: a?.reviewerName || rev?.name || null,
-        reviewerEmail: a?.reviewerEmail || rev?.email || null,
-        submittedAt: a?.submittedAt || null,
-        reviewedAt: a?.reviewedAt || null,
-        annotationStatus: a?.status || null,
-        annotationIsValid: a ? a.isValid !== false : null,
-      };
-    });
-
-    res.json({
-      tasks: rows,
-      total,
-      page,
-      pages: Math.ceil(total / limit) || 1,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+router.get('/monitoring-tasks', authenticate, authorize('ADMIN'), getMonitoringTasks);
 
 const TRAINING_PAGE = 250;
 
