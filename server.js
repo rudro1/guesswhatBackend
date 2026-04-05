@@ -130,9 +130,23 @@ const allowedOrigins = [
   'http://127.0.0.1:5173'
 ].filter(Boolean);
 
-app.use(helmet({ 
+// app.use(helmet({ 
+//   crossOriginResourcePolicy: { policy: 'cross-origin' },
+//   contentSecurityPolicy: false // Deployment-e waveform ba audio issue hole eta false rakha safe
+// }));
+
+app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  contentSecurityPolicy: false // Deployment-e waveform ba audio issue hole eta false rakha safe
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "res.cloudinary.com"], // Cloudinary images allow korar jonno
+      fontSrc: ["'self'", "https://guesswhatbackend.onrender.com", "data:"], // Font allow kora holo
+      connectSrc: ["'self'", "https://guesswhatbackend.onrender.com", "https://api.cloudinary.com"],
+    },
+  },
 }));
 
 // Optimized CORS
