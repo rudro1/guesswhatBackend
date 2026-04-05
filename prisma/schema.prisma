@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String       @id @default(cuid())
+  email       String       @unique
+  password    String
+  name        String
+  role        Role
+  createdAt   DateTime     @default(now())
+  assignments Assignment[]
+}
+
+model Task {
+  id             Int        @id @default(autoincrement())
+  audioUrl       String
+  fileName       String
+  originalFormat String
+  fileSize       Int
+  checksum       String
+  status         TaskStatus @default(PENDING)
+  uploadBatchId  String
+  projectName    String?
+  createdAt      DateTime   @default(now())
+
+  @@index([uploadBatchId])
+}
+
+model Assignment {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  startTaskId Int
+  endTaskId   Int
+  createdAt   DateTime @default(now())
+}
+
+model Template {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  xmlConfig    String
+  parsedConfig Json
+  createdBy    String
+  isDefault    Boolean  @default(false)
+  usageCount   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum Role {
+  ADMIN
+  ANNOTATOR
+  REVIEWER
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  REVIEWED
+}
