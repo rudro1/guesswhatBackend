@@ -1,10 +1,49 @@
 import prisma from '../config/prisma.js';
 import Annotation from '../models/Annotation.js';
 
+/** Columns safe on DBs that have not run `projectName` / index migrations yet */
+const TASK_SELECT_CORE = {
+  id: true,
+  audioUrl: true,
+  fileName: true,
+  originalFormat: true,
+  fileSize: true,
+  checksum: true,
+  status: true,
+  uploadBatchId: true,
+  createdAt: true,
+};
+
 function parsePositiveInt(value, fallback) {
   const n = Number.parseInt(value, 10);
   if (Number.isNaN(n) || n < 1) return fallback;
   return n;
+}
+
+async function findTasksPaged(where, skip, take, orderBy = { id: 'asc' }) {
+  try {
+    return await prisma.task.findMany({
+      where,
+      skip,
+      take,
+      orderBy,
+      select: { ...TASK_SELECT_CORE, projectName: true },
+    });
+  } catch (err) {
+    console.error('DB_ERROR:', err.message, '(retrying without projectName column)');
+    try {
+      return await prisma.task.findMany({
+        where,
+        skip,
+        take,
+        orderBy,
+        select: TASK_SELECT_CORE,
+      });
+    } catch (err2) {
+      console.error('DB_ERROR:', err2.message, '(task findMany failed)');
+      return [];
+    }
+  }
 }
 
 /**
@@ -25,13 +64,11 @@ export async function getTasks(req, res) {
     }
 
     const [tasksResult, totalResult] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { id: 'asc' },
+      findTasksPaged(where, skip, limit),
+      prisma.task.count({ where }).catch((cErr) => {
+        console.error('DB_ERROR:', cErr.message, '(task count)');
+        return 0;
       }),
-      prisma.task.count({ where }),
     ]);
 
     const tasks = Array.isArray(tasksResult) ? tasksResult : [];
@@ -52,49 +89,79 @@ export async function getTasks(req, res) {
   }
 }
 
+function buildBatchesFromTaskRows(taskRows) {
+  const agg = new Map();
+  for (const t of taskRows) {
+    const bid = t.uploadBatchId;
+    if (!agg.has(bid)) {
+      agg.set(bid, {
+        uploadBatchId: bid,
+        minId: t.id,
+        totalTasks: 0,
+        annotatedCount: 0,
+        reviewedCount: 0,
+        remainingCount: 0,
+        projectName: t.projectName || null,
+      });
+    }
+    const g = agg.get(bid);
+    g.minId = Math.min(g.minId, t.id);
+    g.totalTasks += 1;
+    if (t.projectName && !g.projectName) g.projectName = t.projectName;
+    const st = t.status;
+    if (st === 'COMPLETED' || st === 'REVIEWED') g.annotatedCount += 1;
+    if (st === 'REVIEWED') g.reviewedCount += 1;
+    if (st === 'PENDING' || st === 'IN_PROGRESS') g.remainingCount += 1;
+  }
+  const sorted = [...agg.values()].sort((a, b) => a.minId - b.minId);
+  return sorted.map((g) => {
+    const total = g.totalTasks || 0;
+    const reviewed = g.reviewedCount || 0;
+    const batchName = g.projectName || g.uploadBatchId || 'Unnamed batch';
+    const clientReadinessPct = total > 0 ? Math.round((reviewed / total) * 1000) / 10 : 0;
+    const fullyReviewed = total > 0 && reviewed === total;
+    return {
+      uploadBatchId: g.uploadBatchId,
+      batchName,
+      totalTasks: total,
+      annotatedCount: g.annotatedCount,
+      reviewedCount: reviewed,
+      remainingCount: g.remainingCount,
+      clientReadinessPct,
+      fullyReviewed,
+    };
+  });
+}
+
+async function batchesAggregateJsFallback() {
+  try {
+    const rows = await prisma.task.findMany({
+      select: { id: true, uploadBatchId: true, status: true, projectName: true },
+      orderBy: { id: 'asc' },
+    });
+    return buildBatchesFromTaskRows(rows);
+  } catch (err) {
+    console.error('DB_ERROR:', err.message, '(batches: JS fallback without projectName)');
+    const rows = await prisma.task.findMany({
+      select: { id: true, uploadBatchId: true, status: true },
+      orderBy: { id: 'asc' },
+    });
+    return buildBatchesFromTaskRows(rows);
+  }
+}
+
 /**
  * GET /api/admin/batches — grouped upload batches / projects.
+ * Uses Prisma only (no raw SQL) so Postgres enum/column quirks on Render do not break the route.
  */
 export async function getBatches(req, res) {
   try {
-    const rows = await prisma.$queryRaw`
-      SELECT
-        t."uploadBatchId" AS "uploadBatchId",
-        COUNT(*)::integer AS "totalTasks",
-        COUNT(*) FILTER (WHERE t.status::text IN ('COMPLETED', 'REVIEWED'))::integer AS "annotatedCount",
-        COUNT(*) FILTER (WHERE t.status::text = 'REVIEWED')::integer AS "reviewedCount",
-        COUNT(*) FILTER (WHERE t.status::text IN ('PENDING', 'IN_PROGRESS'))::integer AS "remainingCount",
-        MAX(t."projectName") AS "projectName"
-      FROM "Task" t
-      GROUP BY t."uploadBatchId"
-      ORDER BY MIN(t.id) ASC
-    `;
-
-    const list = Array.isArray(rows) ? rows : [];
-    const batches = list.map((r) => {
-      const total = Number(r.totalTasks) || 0;
-      const reviewed = Number(r.reviewedCount) || 0;
-      const batchName = r.projectName || r.uploadBatchId || 'Unnamed batch';
-      const clientReadinessPct = total > 0 ? Math.round((reviewed / total) * 1000) / 10 : 0;
-      const fullyReviewed = total > 0 && reviewed === total;
-      return {
-        uploadBatchId: r.uploadBatchId,
-        batchName,
-        totalTasks: total,
-        annotatedCount: Number(r.annotatedCount) || 0,
-        reviewedCount: reviewed,
-        remainingCount: Number(r.remainingCount) || 0,
-        clientReadinessPct,
-        fullyReviewed,
-      };
-    });
-
-    return res.json({ batches });
+    const batches = await batchesAggregateJsFallback();
+    return res.json({ batches: Array.isArray(batches) ? batches : [] });
   } catch (error) {
     console.error('DB_ERROR:', error.message);
     return res.status(500).json({
-      error:
-        'Failed to load batches. Ensure DATABASE_URL is set and Prisma migrations are applied (including Task.projectName).',
+      error: 'Failed to load batches. Check DATABASE_URL and that the Task table exists.',
     });
   }
 }
@@ -115,13 +182,11 @@ export async function getMonitoringTasks(req, res) {
     const where = batchId ? { uploadBatchId: batchId } : {};
 
     const [tasksResult, totalResult] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { id: 'asc' },
+      findTasksPaged(where, skip, limit),
+      prisma.task.count({ where }).catch((cErr) => {
+        console.error('DB_ERROR:', cErr.message, '(monitoring task count)');
+        return 0;
       }),
-      prisma.task.count({ where }),
     ]);
 
     const tasks = Array.isArray(tasksResult) ? tasksResult : [];

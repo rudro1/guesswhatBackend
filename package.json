@@ -5,6 +5,7 @@
   "description": "Guess What - Professional Audio Annotation Platform Backend",
   "main": "server.js",
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "node --watch server.js",
     "start": "node server.js",
     "db:push": "prisma db push",
